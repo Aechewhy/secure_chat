@@ -1,0 +1,106 @@
+import socket
+import threading
+import rsa
+import sys
+import shutil
+
+# ANSI color codes
+BLUE = '\033[34m'
+RED = '\033[31m'
+RESET = '\033[0m'
+
+# ==== DISCOVERY CONFIG ====
+DISCOVERY_PORT    = 50000
+DISCOVERY_MESSAGE = b"DISCOVER_SERVER"
+DISCOVERY_TIMEOUT = 5
+
+# Discover server via UDP broadcast
+def discover_server():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(DISCOVERY_TIMEOUT)
+
+    sock.sendto(DISCOVERY_MESSAGE, ('<broadcast>', DISCOVERY_PORT))
+    print("[DISCOVERY] Broadcast sent, waiting for server response…")
+
+    try:
+        data, _ = sock.recvfrom(1024)
+        server_ip = data.decode().strip()
+        print(f"[DISCOVERY] Server IP: {server_ip}")
+        return server_ip
+    except socket.timeout:
+        print("[DISCOVERY] No server response.")
+        return None
+
+# Sending thread
+def sending_messages(conn, public_partner, username):
+    try:
+        while True:
+            msg = input("")
+            if msg.lower() == "exit":
+                confirm = input("Do you want to exit? (Y/N): ")
+                if confirm.lower() == 'y':
+                    conn.send(b"exit")
+                    print("Disconnecting…")
+                    raise SystemExit
+                else:
+                    continue
+            ciphertext = rsa.encrypt(msg.encode(), public_partner)
+            conn.send(ciphertext)
+            print(f"{BLUE}{username}:{RESET} {msg}")
+    except (SystemExit, KeyboardInterrupt):
+        conn.close()
+        raise
+
+# Receiving thread
+def receiving_messages(conn, private_key, partner_name):
+    try:
+        width = shutil.get_terminal_size((80, 20)).columns
+        label = f"{partner_name}: "
+        while True:
+            data = conn.recv(4096)
+            if not data or data == b"exit":
+                print(f"{partner_name} disconnected.")
+                raise SystemExit
+            plaintext = rsa.decrypt(data, private_key).decode()
+            full = label + plaintext
+            pad = max(width - len(full), 0)
+            print(" " * pad + f"{RED}{label}{RESET}{plaintext}")
+    except (SystemExit, KeyboardInterrupt):
+        conn.close()
+        raise
+
+if __name__ == "__main__":
+    # Prompt for username
+    username = input("Enter your name: ")
+
+    # Generate RSA keys
+    public_key, private_key = rsa.newkeys(1024)
+
+    # Discover and connect\    
+    server_ip = discover_server()
+    if not server_ip:
+        sys.exit("Could not find server.")
+    conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    conn.connect((server_ip, 9999))
+    print(f"[TCP] Connected to {server_ip}:9999")
+
+    # RSA public key exchange
+    public_partner = rsa.PublicKey.load_pkcs1(conn.recv(2048))
+    conn.send(public_key.save_pkcs1("PEM"))
+
+    # Username exchange
+    partner_name = conn.recv(1024).decode()
+    conn.send(username.encode())
+
+    print(f"Chatting with {partner_name}")
+
+    # Start chat threads
+    t1 = threading.Thread(target=sending_messages,   args=(conn, public_partner, username))
+    t2 = threading.Thread(target=receiving_messages, args=(conn, private_key, partner_name))
+    t1.start(); t2.start()
+    t1.join();  t2.join()
+
+    print("Client shutting down.")
+    conn.close()
+    sys.exit()
