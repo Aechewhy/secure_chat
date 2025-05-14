@@ -13,31 +13,24 @@ RESET = '\033[0m'
 # ==== DISCOVERY CONFIG ====
 DISCOVERY_PORT    = 50000
 DISCOVERY_MESSAGE = b"DISCOVER_SERVER"
+DISCOVERY_TIMEOUT = 5
 
-def generate_keys():
-    return rsa.newkeys(1024)
-
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('10.255.255.255', 1))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = '127.0.0.1'
-    finally:
-        s.close()
-    return ip
-
-def handle_discovery():
+def discover_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("", DISCOVERY_PORT))
-    print(f"[DISCOVERY] Listening on UDP {DISCOVERY_PORT}…")
-    while True:
-        data, addr = sock.recvfrom(1024)
-        if data == DISCOVERY_MESSAGE:
-            ip = get_local_ip().encode()
-            print(f"[DISCOVERY] Replying to {addr} with {ip.decode()}")
-            sock.sendto(ip, addr)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(DISCOVERY_TIMEOUT)
+
+    sock.sendto(DISCOVERY_MESSAGE, ('<broadcast>', DISCOVERY_PORT))
+    print("[DISCOVERY] Broadcast sent, waiting for server response…")
+
+    try:
+        data, _ = sock.recvfrom(1024)
+        server_ip = data.decode().strip()
+        print(f"[DISCOVERY] Server IP: {server_ip}")
+        return server_ip
+    except socket.timeout:
+        print("[DISCOVERY] No server response.")
+        return None
 
 def sending_messages(conn, public_partner, username):
     try:
@@ -87,24 +80,21 @@ def receiving_messages(conn, private_key, partner_name):
 
 if __name__ == "__main__":
     username = input("Enter your name: ")
-    public_key, private_key = generate_keys()
-    threading.Thread(target=handle_discovery, daemon=True).start()
+    public_key, private_key = rsa.newkeys(1024)
 
-    local_ip = get_local_ip()
-    print("Local IP Address:", local_ip)
+    server_ip = discover_server()
+    if not server_ip:
+        sys.exit("Could not find server.")
 
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((local_ip, 9999))
-    server.listen(1)
-    print("[TCP] Waiting for connection on port 9999…")
+    conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    conn.connect((server_ip, 9999))
+    print(f"[TCP] Connected to {server_ip}:9999")
 
-    conn, _ = server.accept()
-
-    conn.send(public_key.save_pkcs1("PEM"))
     public_partner = rsa.PublicKey.load_pkcs1(conn.recv(2048))
+    conn.send(public_key.save_pkcs1("PEM"))
 
-    conn.send(username.encode())
     partner_name = conn.recv(1024).decode()
+    conn.send(username.encode())
     print(f"Chatting with {partner_name}")
 
     t1 = threading.Thread(target=sending_messages, args=(conn, public_partner, username))
@@ -112,6 +102,6 @@ if __name__ == "__main__":
     t1.start(); t2.start()
     t1.join(); t2.join()
 
-    print("Server shutting down.")
-    conn.close(); server.close()
+    print("Client shutting down.")
+    conn.close()
     sys.exit()
