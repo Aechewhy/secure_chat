@@ -1,6 +1,6 @@
 import socket
 import threading
-import rsa
+import custom_rsa
 import sys
 import shutil
 from datetime import datetime
@@ -15,7 +15,7 @@ DISCOVERY_PORT    = 50000
 DISCOVERY_MESSAGE = b"DISCOVER_SERVER"
 
 def generate_keys():
-    return rsa.newkeys(1024)
+    return custom_rsa.generate_keys(1024)
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -51,7 +51,7 @@ def sending_messages(conn, public_partner, username):
                 else:
                     continue
 
-            conn.send(rsa.encrypt(msg.encode(), public_partner))
+            conn.send(custom_rsa.encrypt(msg, public_partner))
 
             # own messages: left-aligned
             timestamp = datetime.now().strftime("%H:%M:%S")
@@ -70,7 +70,7 @@ def receiving_messages(conn, private_key, partner_name):
                 print(f"{partner_name} disconnected.")
                 raise SystemExit
 
-            plaintext = rsa.decrypt(data, private_key).decode()
+            plaintext = custom_rsa.decrypt(data, private_key)
 
             # partner messages: right-aligned
             width = shutil.get_terminal_size((80, 20)).columns
@@ -100,8 +100,8 @@ if __name__ == "__main__":
 
     conn, _ = server.accept()
 
-    conn.send(public_key.save_pkcs1("PEM"))
-    public_partner = rsa.PublicKey.load_pkcs1(conn.recv(2048))
+    conn.send(custom_rsa.save_pkcs1(public_key, 'public').encode())
+    public_partner = custom_rsa.load_pkcs1(conn.recv(2048).decode(), 'public')
 
     conn.send(username.encode())
     partner_name = conn.recv(1024).decode()
@@ -114,4 +114,4 @@ if __name__ == "__main__":
 
     print("Server shutting down.")
     conn.close(); server.close()
-    sys.exit()
+    sys.exit()   
