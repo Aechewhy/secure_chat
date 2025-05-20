@@ -1,67 +1,102 @@
 import socket
 import threading
+import sys
+import shutil
+from datetime import datetime
 
-# Global flag to control thread execution
-running = True
+# ANSI color codes
+BLUE = '\033[34m'
+RED  = '\033[31m'
+RESET= '\033[0m'
 
-def receive_messages(client_socket):
-    """Receive messages from the client and display them."""
-    global running
-    while running:
-        try:
-            data = client_socket.recv(1024)
-            if not data:
-                print("Client disconnected.")
-                running = False
+# ==== DISCOVERY CONFIG ====
+DISCOVERY_PORT    = 50000
+DISCOVERY_MESSAGE = b"DISCOVER_SERVER"
+
+# Get LAN IP address
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        ip = s.getsockname()[0]
+    except:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+# Discovery responder thread
+def handle_discovery():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("", DISCOVERY_PORT))
+    while True:
+        data, addr = sock.recvfrom(1024)
+        if data == DISCOVERY_MESSAGE:
+            sock.sendto(get_local_ip().encode(), addr)
+
+# Sending thread (plaintext)
+def sending_messages(conn, username):
+    try:
+        while True:
+            msg = input("")
+            if msg.lower() == 'exit':
+                if input("Do you want to exit? (Y/N): ").lower() == 'y':
+                    conn.send(b'exit')
+                    print("Disconnecting…")
+                    break
+                else:
+                    continue
+            # send plaintext
+            data = msg.encode()
+            conn.send(data)
+            # display own message and timestamp
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            print(f"{BLUE}<{timestamp}>{RESET}")
+            print(f"{BLUE}{username}:{RESET} {msg}")
+    finally:
+        conn.close()
+        sys.exit()
+
+# Receiving thread (plaintext)
+def receiving_messages(conn, partner_name):
+    width = shutil.get_terminal_size((80,20)).columns
+    try:
+        while True:
+            data = conn.recv(8192)
+            if not data or data == b'exit':
+                print(f"{partner_name} disconnected.")
                 break
-            message = data.decode('utf-8')
-            if message == "exit":
-                print("Client sent exit command.")
-                running = False
-                break
-            print("Client:", message)
-        except:
-            break
+            plaintext = data.decode()
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            label = f"{partner_name} {timestamp}: "
+            pad = max(width - len(label) - len(plaintext), 0)
+            print(' ' * pad + f"{RED}{label}{RESET}{plaintext}")
+    finally:
+        conn.close()
+        sys.exit()
 
-def send_messages(client_socket):
-    """Send messages to the client based on user input."""
-    global running
-    while running:
-        try:
-            message = input("Server: ")
-            if message == "exit":
-                client_socket.send(message.encode('utf-8'))
-                running = False
-                break
-            client_socket.send(message.encode('utf-8'))
-        except:
-            print("Error sending message.")
-            running = False
-            break
+if __name__ == '__main__':
+    username = input('Enter your name: ')
 
-if __name__ == "__main__":
-    # Set up server address and socket
-    server_address = ('localhost', 12345)
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind(server_address)
-    server_socket.listen(1)
-    print("Waiting for connection...")
+    threading.Thread(target=handle_discovery, daemon=True).start()
+    ip = get_local_ip()
+    print('Local IP Address:', ip)
 
-    # Accept client connection
-    client_socket, client_address = server_socket.accept()
-    print("Connected to", client_address)
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind((ip, 9999))
+    server.listen(1)
+    conn, _ = server.accept()
 
-    # Start threads for sending and receiving
-    receive_thread = threading.Thread(target=receive_messages, args=(client_socket,))
-    send_thread = threading.Thread(target=send_messages, args=(client_socket,))
-    receive_thread.start()
-    send_thread.start()
+    # exchange names
+    conn.send(username.encode())
+    partner_name = conn.recv(1024).decode()
+    print(f"Chatting with {partner_name}")
 
-    # Wait for threads to complete
-    receive_thread.join()
-    send_thread.join()
+    t1 = threading.Thread(target=sending_messages,   args=(conn, username))
+    t2 = threading.Thread(target=receiving_messages, args=(conn, partner_name))
+    t1.start(); t2.start()
+    t1.join();  t2.join()
 
-    # Clean up
-    client_socket.close()
-    server_socket.close()
-    print("Server shut down.")
+    print('Server shutting down.')
+    server.close()
+    sys.exit()
