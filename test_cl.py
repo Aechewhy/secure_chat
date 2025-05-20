@@ -1,13 +1,14 @@
 import socket
 import threading
-import rsa
 import sys
 import shutil
+from datetime import datetime
+import custom_rsa  # your RSA module
 
 # ANSI color codes
 BLUE = '\033[34m'
-RED = '\033[31m'
-RESET = '\033[0m'
+RED  = '\033[31m'
+RESET= '\033[0m'
 
 # ==== DISCOVERY CONFIG ====
 DISCOVERY_PORT    = 50000
@@ -19,10 +20,8 @@ def discover_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.settimeout(DISCOVERY_TIMEOUT)
-
     sock.sendto(DISCOVERY_MESSAGE, ('<broadcast>', DISCOVERY_PORT))
     print("[DISCOVERY] Broadcast sent, waiting for server response…")
-
     try:
         data, _ = sock.recvfrom(1024)
         server_ip = data.decode().strip()
@@ -32,52 +31,51 @@ def discover_server():
         print("[DISCOVERY] No server response.")
         return None
 
-# Sending thread
+# Sending thread: show encrypted bytes on sender screen
 def sending_messages(conn, public_partner, username):
     try:
         while True:
             msg = input("")
-            if msg.lower() == "exit":
-                confirm = input("Do you want to exit? (Y/N): ")
-                if confirm.lower() == 'y':
-                    conn.send(b"exit")
+            if msg.lower() == 'exit':
+                if input("Do you want to exit? (Y/N): ").lower() == 'y':
+                    conn.send(b'exit')
                     print("Disconnecting…")
-                    raise SystemExit
+                    break
                 else:
                     continue
-            ciphertext = rsa.encrypt(msg.encode(), public_partner)
+            ciphertext = custom_rsa.encrypt(msg, public_partner)
+            print(f"Encrypted (hex): {ciphertext.hex()}")
             conn.send(ciphertext)
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            print(f"{BLUE}<{timestamp}>{RESET}")
             print(f"{BLUE}{username}:{RESET} {msg}")
-    except (SystemExit, KeyboardInterrupt):
+    finally:
         conn.close()
-        raise
+        sys.exit()
 
 # Receiving thread
 def receiving_messages(conn, private_key, partner_name):
+    width = shutil.get_terminal_size((80,20)).columns
     try:
-        width = shutil.get_terminal_size((80, 20)).columns
-        label = f"{partner_name}: "
         while True:
-            data = conn.recv(4096)
-            if not data or data == b"exit":
+            data = conn.recv(8192)
+            if not data or data == b'exit':
                 print(f"{partner_name} disconnected.")
-                raise SystemExit
-            plaintext = rsa.decrypt(data, private_key).decode()
-            full = label + plaintext
-            pad = max(width - len(full), 0)
-            print(" " * pad + f"{RED}{label}{RESET}{plaintext}")
-    except (SystemExit, KeyboardInterrupt):
+                break
+            plaintext = custom_rsa.decrypt(data, private_key)
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            label = f"{partner_name} {timestamp}: "
+            pad = max(width - len(label) - len(plaintext), 0)
+            print(' ' * pad + f"{RED}{label}{RESET}{plaintext}")
+    finally:
         conn.close()
-        raise
+        sys.exit()
 
-if __name__ == "__main__":
-    # Prompt for username
-    username = input("Enter your name: ")
+if __name__ == '__main__':
+    username = input('Enter your name: ')
+    # Generate RSA keys once for this session
+    public_key, private_key = custom_rsa.generate_keys(1024)
 
-    # Generate RSA keys
-    public_key, private_key = rsa.newkeys(1024)
-
-    # Discover and connect\    
     server_ip = discover_server()
     if not server_ip:
         sys.exit("Could not find server.")
@@ -85,22 +83,21 @@ if __name__ == "__main__":
     conn.connect((server_ip, 9999))
     print(f"[TCP] Connected to {server_ip}:9999")
 
-    # RSA public key exchange
-    public_partner = rsa.PublicKey.load_pkcs1(conn.recv(2048))
-    conn.send(public_key.save_pkcs1("PEM"))
+    # Exchange public keys
+    partner_pem = conn.recv(2048).decode()
+    public_partner = custom_rsa.load_pkcs1(partner_pem, 'public')
+    conn.send(custom_rsa.save_pkcs1(public_key, 'public').encode())
 
-    # Username exchange
+    # Exchange names
     partner_name = conn.recv(1024).decode()
     conn.send(username.encode())
-
     print(f"Chatting with {partner_name}")
 
-    # Start chat threads
     t1 = threading.Thread(target=sending_messages,   args=(conn, public_partner, username))
     t2 = threading.Thread(target=receiving_messages, args=(conn, private_key, partner_name))
     t1.start(); t2.start()
     t1.join();  t2.join()
 
-    print("Client shutting down.")
+    print('Client shutting down.')
     conn.close()
     sys.exit()
